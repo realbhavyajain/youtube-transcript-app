@@ -174,3 +174,11 @@ After successful deployment:
 **🎯 Your app is now live and accessible to the entire world!**
 
 *Need help? Check the troubleshooting section or reach out to the Render community.*
+
+## 🌐 Cloudflare Worker Proxy (Recommended)
+
+1. Go to `https://dash.cloudflare.com` → Workers & Pages → Create → HTTP Handler
+2. Replace code with `cloudflare_worker.js` from this repo
+3. Deploy → note the URL, e.g. `https://yt-proxy-yourname.workers.dev`
+4. In your site, set `window.CLOUDFLARE_PROXY_BASE = 'https://yt-proxy-yourname.workers.dev'` (e.g., add a small `<script>` tag before the main script in `templates/index.html`), or hardcode the URL into `PROXY_BASE`.
+5. All YouTube page and transcript XML requests now route via your Worker with proper CORS.
