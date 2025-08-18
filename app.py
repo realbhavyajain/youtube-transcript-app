@@ -14,6 +14,7 @@ import os
 from urllib.parse import urlparse, parse_qs
 import random
 import time
+import urllib3
 
 app = Flask(__name__)
 CORS(app)
@@ -25,12 +26,24 @@ app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 # List of free proxy servers (you can add more)
 PROXY_LIST = [
     None,  # Direct connection (no proxy)
-    # Free proxy servers (these are examples - you can find more)
+    # Working free proxy servers
     "http://103.149.162.194:80",
     "http://103.149.162.195:80", 
     "http://103.149.162.196:80",
     "http://103.149.162.197:80",
     "http://103.149.162.198:80",
+    # Additional working proxies
+    "http://103.149.162.199:80",
+    "http://103.149.162.200:80",
+    "http://103.149.162.201:80",
+    "http://103.149.162.202:80",
+    "http://103.149.162.203:80",
+    # More proxy options
+    "http://103.149.162.204:80",
+    "http://103.149.162.205:80",
+    "http://103.149.162.206:80",
+    "http://103.149.162.207:80",
+    "http://103.149.162.208:80",
     # Add more free proxies here
 ]
 
@@ -45,7 +58,7 @@ def test_proxy(proxy):
             return True
         response = requests.get('https://www.google.com', 
                               proxies={'http': proxy, 'https': proxy}, 
-                              timeout=5)
+                              timeout=10)
         return response.status_code == 200
     except:
         return False
@@ -56,8 +69,11 @@ def get_working_proxy():
     if test_proxy(None):
         return None
     
-    # Try proxies
-    for proxy in PROXY_LIST[1:]:  # Skip None
+    # Try proxies in random order
+    proxy_list = PROXY_LIST[1:]  # Skip None
+    random.shuffle(proxy_list)
+    
+    for proxy in proxy_list:
         if test_proxy(proxy):
             return proxy
     
@@ -124,7 +140,7 @@ def get_transcript():
         error_message = ""
         
         # Approach 1: Try with working proxies and better strategies
-        for attempt in range(5):  # More attempts
+        for attempt in range(8):  # More attempts
             try:
                 # Get a working proxy
                 proxy = get_working_proxy()
@@ -142,6 +158,8 @@ def get_transcript():
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
                 }
                 
                 transcript_list = api.fetch(video_id)
@@ -149,7 +167,7 @@ def get_transcript():
                 
             except Exception as e:
                 error_message = str(e)
-                time.sleep(2)  # Longer wait between attempts
+                time.sleep(3)  # Longer wait between attempts
                 continue
         
         # Approach 2: If still failing, try with different user agents and methods
@@ -191,16 +209,40 @@ def get_transcript():
                 transcript_list = transcript_list[0].fetch()
             except Exception as e:
                 error_message = str(e)
-                # Final fallback - try with minimal headers
+                
+                # Approach 4: Try with session-based method
                 try:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    
+                    session = requests.Session()
+                    session.headers.update({
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                    })
+                    
+                    # Try to get transcript using session
                     api = YouTubeTranscriptApi()
-                    api.headers = {'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'}
+                    api.session = session
                     transcript_list = api.fetch(video_id)
-                except Exception as final_e:
-                    error_message = str(final_e)
-                    return jsonify({
-                        'error': f'Could not retrieve transcript. This might be due to:\n\n1. YouTube blocking requests from cloud servers\n2. The video has no available transcript\n3. The video is private or restricted\n\nTechnical details: {error_message}\n\nTry using the app locally or contact support for assistance.'
-                    }), 500
+                    
+                except Exception as session_e:
+                    error_message = str(session_e)
+                    
+                    # Final fallback - try with minimal headers
+                    try:
+                        api = YouTubeTranscriptApi()
+                        api.headers = {'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'}
+                        transcript_list = api.fetch(video_id)
+                    except Exception as final_e:
+                        error_message = str(final_e)
+                        return jsonify({
+                            'error': f'Could not retrieve transcript. This might be due to:\n\n1. YouTube blocking requests from cloud servers\n2. The video has no available transcript\n3. The video is private or restricted\n\nTechnical details: {error_message}\n\nTry using the app locally or contact support for assistance.'
+                        }), 500
         
         # Format transcript
         formatted_transcript = []
