@@ -18,7 +18,7 @@ import time
 app = Flask(__name__)
 CORS(app)
 
-# Production configuration
+# Production configuration - Updated for better YouTube blocking handling
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 
