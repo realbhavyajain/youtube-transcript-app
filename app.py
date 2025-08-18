@@ -12,6 +12,8 @@ from reportlab.lib.units import inch
 import io
 import os
 from urllib.parse import urlparse, parse_qs
+import random
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -19,6 +21,16 @@ CORS(app)
 # Production configuration
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+
+# List of free proxy servers (you can add more)
+PROXY_LIST = [
+    None,  # Direct connection (no proxy)
+    # Add more proxies here if needed
+]
+
+def get_random_proxy():
+    """Get a random proxy from the list"""
+    return random.choice(PROXY_LIST)
 
 def extract_video_id(url):
     """Extract YouTube video ID from various URL formats"""
@@ -76,9 +88,51 @@ def get_transcript():
         if not video_id:
             return jsonify({'error': 'Invalid YouTube URL'}), 400
         
-        # Get transcript using the new instance-based API
-        api = YouTubeTranscriptApi()
-        transcript_list = api.fetch(video_id)
+        # Try multiple approaches to get transcript
+        transcript_list = None
+        error_message = ""
+        
+        # Approach 1: Try with different proxies
+        for attempt in range(3):
+            try:
+                proxy = get_random_proxy()
+                api = YouTubeTranscriptApi()
+                
+                if proxy:
+                    # Configure proxy if available
+                    api.proxies = {'http': proxy, 'https': proxy}
+                
+                transcript_list = api.fetch(video_id)
+                break  # Success, exit the loop
+                
+            except Exception as e:
+                error_message = str(e)
+                time.sleep(1)  # Wait before retry
+                continue
+        
+        # Approach 2: If still failing, try with different user agents
+        if transcript_list is None:
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            ]
+            
+            for user_agent in user_agents:
+                try:
+                    api = YouTubeTranscriptApi()
+                    api.headers = {'User-Agent': user_agent}
+                    transcript_list = api.fetch(video_id)
+                    break
+                except Exception as e:
+                    error_message = str(e)
+                    time.sleep(1)
+                    continue
+        
+        if transcript_list is None:
+            return jsonify({
+                'error': f'Could not retrieve transcript. This might be due to:\n\n1. YouTube blocking requests from cloud servers\n2. The video has no available transcript\n3. The video is private or restricted\n\nTechnical details: {error_message}\n\nTry using the app locally or contact support for assistance.'
+            }), 500
         
         # Format transcript
         formatted_transcript = []
@@ -105,15 +159,16 @@ def get_transcript():
         video_info = get_video_info(video_id)
         
         return jsonify({
-            'success': True,
-            'video_id': video_id,
             'transcript': formatted_transcript,
             'full_text': full_text,
-            'video_info': video_info
+            'video_info': video_info,
+            'success': True
         })
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': f'An unexpected error occurred: {str(e)}\n\nThis might be due to YouTube blocking requests from cloud servers. Try using the app locally for better results.'
+        }), 500
 
 @app.route('/api/export/txt', methods=['POST'])
 def export_txt():

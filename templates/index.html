@@ -849,18 +849,57 @@
         }
 
         .error {
-            background: rgba(239, 68, 68, 0.1);
+            background: rgba(239, 68, 68, 0.15);
             backdrop-filter: blur(20px);
-            border: 1px solid rgba(239, 68, 68, 0.3);
+            border: 1px solid rgba(239, 68, 68, 0.4);
             color: #fca5a5;
-            padding: 1.5rem;
+            padding: 2rem;
             border-radius: 16px;
             margin: 1.5rem 0;
-            text-align: center;
+            text-align: left;
             box-shadow: 
-                0 8px 32px rgba(239, 68, 68, 0.2),
-                inset 0 1px 0 rgba(255,255,255,0.1);
+                0 8px 32px rgba(239, 68, 68, 0.3),
+                inset 0 1px 0 rgba(255,255,255,0.1),
+                0 0 20px rgba(239, 68, 68, 0.2);
             animation: slideInUp 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .error::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #ef4444, #f97316, #ef4444);
+            animation: shimmer 2s infinite;
+        }
+
+        .error h4 {
+            margin: 0 0 15px 0;
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+        .error ul {
+            margin: 0 0 15px 0;
+            padding-left: 20px;
+        }
+
+        .error li {
+            margin: 8px 0;
+            line-height: 1.5;
+        }
+
+        .error p {
+            margin: 0;
+            font-size: 0.9em;
+            opacity: 0.8;
+            border-top: 1px solid rgba(239, 68, 68, 0.3);
+            padding-top: 10px;
+            margin-top: 15px;
         }
 
         .success {
@@ -887,6 +926,11 @@
                 opacity: 1;
                 transform: translateY(0);
             }
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
         }
 
         @media (max-width: 768px) {
@@ -1153,12 +1197,31 @@
         function showError(message) {
             const errorDiv = document.createElement('div');
             errorDiv.className = 'error';
-            errorDiv.textContent = message;
+            
+            // Check if it's a YouTube blocking error
+            if (message.includes('YouTube is blocking requests') || message.includes('cloud servers')) {
+                errorDiv.innerHTML = `
+                    <div style="text-align: left; line-height: 1.6;">
+                        <h4 style="margin: 0 0 10px 0; color: #fbbf24;">⚠️ YouTube Blocking Issue</h4>
+                        <p style="margin: 0 0 10px 0;">YouTube is blocking requests from cloud servers. Here are your options:</p>
+                        <ul style="margin: 0 0 15px 0; padding-left: 20px;">
+                            <li><strong>Try again later</strong> - Sometimes it works after a few minutes</li>
+                            <li><strong>Use locally</strong> - Run the app on your computer for better results</li>
+                            <li><strong>Try a different video</strong> - Some videos work better than others</li>
+                        </ul>
+                        <p style="margin: 0; font-size: 0.9em; opacity: 0.8;">
+                            <strong>Technical:</strong> ${message}
+                        </p>
+                    </div>
+                `;
+            } else {
+                errorDiv.textContent = message;
+            }
             
             const inputSection = document.querySelector('.input-section');
             inputSection.appendChild(errorDiv);
             
-            setTimeout(() => errorDiv.remove(), 5000);
+            setTimeout(() => errorDiv.remove(), 8000);
         }
 
         function showSuccess(message) {
