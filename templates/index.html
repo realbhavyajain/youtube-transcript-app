@@ -1531,8 +1531,9 @@
         // Client-side YouTube transcript extraction
         async function extractTranscriptClientSide(videoId) {
             try {
-                // Method 1: Try using YouTube's internal API
-                const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+                // Method 1: Try using YouTube's internal API (via backend proxy to avoid CORS)
+                const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                const response = await fetch(`/api/proxy?url=${encodeURIComponent(watchUrl)}`);
                 const html = await response.text();
                 
                 // Extract transcript data from YouTube page
@@ -1567,7 +1568,8 @@
         }
         
         async function fetchTranscriptFromUrl(url) {
-            const response = await fetch(url);
+            // Fetch the XML via backend proxy to avoid CORS
+            const response = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
             const xml = await response.text();
             
             // Parse XML transcript data
