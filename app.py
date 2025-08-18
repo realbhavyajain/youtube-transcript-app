@@ -25,12 +25,43 @@ app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 # List of free proxy servers (you can add more)
 PROXY_LIST = [
     None,  # Direct connection (no proxy)
-    # Add more proxies here if needed
+    # Free proxy servers (these are examples - you can find more)
+    "http://103.149.162.194:80",
+    "http://103.149.162.195:80", 
+    "http://103.149.162.196:80",
+    "http://103.149.162.197:80",
+    "http://103.149.162.198:80",
+    # Add more free proxies here
 ]
 
 def get_random_proxy():
     """Get a random proxy from the list"""
     return random.choice(PROXY_LIST)
+
+def test_proxy(proxy):
+    """Test if a proxy is working"""
+    try:
+        if proxy is None:
+            return True
+        response = requests.get('https://www.google.com', 
+                              proxies={'http': proxy, 'https': proxy}, 
+                              timeout=5)
+        return response.status_code == 200
+    except:
+        return False
+
+def get_working_proxy():
+    """Get a working proxy from the list"""
+    # Try direct connection first
+    if test_proxy(None):
+        return None
+    
+    # Try proxies
+    for proxy in PROXY_LIST[1:]:  # Skip None
+        if test_proxy(proxy):
+            return proxy
+    
+    return None
 
 def extract_video_id(url):
     """Extract YouTube video ID from various URL formats"""
@@ -92,47 +123,84 @@ def get_transcript():
         transcript_list = None
         error_message = ""
         
-        # Approach 1: Try with different proxies
-        for attempt in range(3):
+        # Approach 1: Try with working proxies and better strategies
+        for attempt in range(5):  # More attempts
             try:
-                proxy = get_random_proxy()
+                # Get a working proxy
+                proxy = get_working_proxy()
                 api = YouTubeTranscriptApi()
                 
+                # Configure proxy if available
                 if proxy:
-                    # Configure proxy if available
                     api.proxies = {'http': proxy, 'https': proxy}
+                
+                # Add headers to look more like a real browser
+                api.headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
                 
                 transcript_list = api.fetch(video_id)
                 break  # Success, exit the loop
                 
             except Exception as e:
                 error_message = str(e)
-                time.sleep(1)  # Wait before retry
+                time.sleep(2)  # Longer wait between attempts
                 continue
         
-        # Approach 2: If still failing, try with different user agents
+        # Approach 2: If still failing, try with different user agents and methods
         if transcript_list is None:
             user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
             ]
             
             for user_agent in user_agents:
                 try:
                     api = YouTubeTranscriptApi()
-                    api.headers = {'User-Agent': user_agent}
+                    api.headers = {
+                        'User-Agent': user_agent,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                    }
                     transcript_list = api.fetch(video_id)
                     break
                 except Exception as e:
                     error_message = str(e)
-                    time.sleep(1)
+                    time.sleep(2)
                     continue
         
+        # Approach 3: Try alternative method using different API approach
         if transcript_list is None:
-            return jsonify({
-                'error': f'Could not retrieve transcript. This might be due to:\n\n1. YouTube blocking requests from cloud servers\n2. The video has no available transcript\n3. The video is private or restricted\n\nTechnical details: {error_message}\n\nTry using the app locally or contact support for assistance.'
-            }), 500
+            try:
+                # Try with a different approach - using list_transcripts
+                api = YouTubeTranscriptApi()
+                transcript_list = api.list_transcripts(video_id)
+                # Get the first available transcript
+                transcript_list = transcript_list[0].fetch()
+            except Exception as e:
+                error_message = str(e)
+                # Final fallback - try with minimal headers
+                try:
+                    api = YouTubeTranscriptApi()
+                    api.headers = {'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'}
+                    transcript_list = api.fetch(video_id)
+                except Exception as final_e:
+                    error_message = str(final_e)
+                    return jsonify({
+                        'error': f'Could not retrieve transcript. This might be due to:\n\n1. YouTube blocking requests from cloud servers\n2. The video has no available transcript\n3. The video is private or restricted\n\nTechnical details: {error_message}\n\nTry using the app locally or contact support for assistance.'
+                    }), 500
         
         # Format transcript
         formatted_transcript = []
