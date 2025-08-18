@@ -1121,30 +1121,86 @@
             setLoading(true);
             
             try {
-                const response = await fetch('/api/transcript', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ 
-                        url,
-                        showTimestamps: showTimestampsCheckbox.checked
-                    })
-                });
-
-                const data = await response.json();
-                
-                if (data.success) {
-                    displayResult(data);
-                } else {
-                    showError(data.error || 'Failed to extract transcript');
+                // Extract video ID
+                const videoId = extractVideoId(url);
+                if (!videoId) {
+                    showError('Invalid YouTube URL');
+                    setLoading(false);
+                    return;
                 }
+                
+                // Try client-side extraction first
+                let transcriptData = null;
+                try {
+                    console.log('Attempting client-side extraction...');
+                    const transcript = await extractTranscriptClientSide(videoId);
+                    transcriptData = {
+                        transcript: transcript,
+                        success: true,
+                        method: 'client-side',
+                        video_info: {
+                            thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+                            title: 'YouTube Video'
+                        }
+                    };
+                } catch (clientError) {
+                    console.log('Client-side extraction failed, trying server-side...');
+                    
+                    // Fallback to server-side extraction
+                    const response = await fetch('/api/transcript', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ 
+                            url,
+                            showTimestamps: showTimestampsCheckbox.checked
+                        })
+                    });
+
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        transcriptData = data;
+                        transcriptData.method = 'server-side';
+                    } else {
+                        showError(data.error || 'Failed to extract transcript');
+                        setLoading(false);
+                        return;
+                    }
+                }
+                
+                // Process and display the result
+                if (transcriptData && transcriptData.success) {
+                    displayResult(transcriptData);
+                    console.log(`Extraction successful using: ${transcriptData.method}`);
+                } else {
+                    showError('Failed to extract transcript from both client and server methods');
+                }
+                
             } catch (error) {
+                console.error('Extraction error:', error);
                 showError('Network error. Please try again.');
             } finally {
                 setLoading(false);
             }
         });
+        
+        function extractVideoId(url) {
+            const patterns = [
+                /[?&]v=([^&]+)/,
+                /youtu\.be\/([^?]+)/,
+                /embed\/([^?]+)/
+            ];
+            
+            for (const pattern of patterns) {
+                const match = url.match(pattern);
+                if (match) {
+                    return match[1];
+            }
+            }
+            return null;
+        }
 
         function isValidYouTubeUrl(url) {
             const patterns = [
@@ -1169,16 +1225,35 @@
         }
 
         function displayResult(data) {
-            currentTranscript = data.full_text;
-            currentTitle = data.video_info.title;
+            // Handle both client-side and server-side data formats
+            let fullText = '';
+            let videoTitle = data.video_info?.title || 'YouTube Video';
+            let videoId = data.video_id || extractVideoId(youtubeUrlInput.value);
+            
+            // Build full text from transcript
+            if (data.transcript && Array.isArray(data.transcript)) {
+                fullText = data.transcript.map(item => {
+                    if (showTimestampsCheckbox.checked) {
+                        return `[${item.timestamp}] ${item.text}`;
+                    } else {
+                        return item.text;
+                    }
+                }).join('\n');
+            } else if (data.full_text) {
+                fullText = data.full_text;
+            }
+            
+            currentTranscript = fullText;
+            currentTitle = videoTitle;
             currentTranscriptData = data;
 
             // Display video info
             videoInfo.innerHTML = `
-                <img src="${data.video_info.thumbnail}" alt="Video thumbnail" class="thumbnail">
+                <img src="${data.video_info?.thumbnail || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`}" alt="Video thumbnail" class="thumbnail">
                 <div class="video-details">
-                    <h3>${data.video_info.title}</h3>
-                    <p>Video ID: ${data.video_id}</p>
+                    <h3>${videoTitle}</h3>
+                    <p>Video ID: ${videoId}</p>
+                    <p style="font-size: 0.9em; opacity: 0.8;">Method: ${data.method || 'server-side'}</p>
                 </div>
             `;
 
@@ -1191,7 +1266,7 @@
             `).join('');
 
             resultSection.style.display = 'block';
-            showSuccess('Transcript extracted successfully!');
+            showSuccess(`Transcript extracted successfully using ${data.method || 'server-side'} method!`);
         }
 
         function showError(message) {
@@ -1452,6 +1527,91 @@
                 createParticle(x, y);
             }
         }, 2000);
+
+        // Client-side YouTube transcript extraction
+        async function extractTranscriptClientSide(videoId) {
+            try {
+                // Method 1: Try using YouTube's internal API
+                const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+                const html = await response.text();
+                
+                // Extract transcript data from YouTube page
+                const transcriptMatch = html.match(/"captions":\s*({[^}]+})/);
+                if (transcriptMatch) {
+                    const captionsData = JSON.parse(transcriptMatch[1]);
+                    if (captionsData.playerCaptionsTracklistRenderer) {
+                        const tracks = captionsData.playerCaptionsTracklistRenderer.captionTracks;
+                        if (tracks && tracks.length > 0) {
+                            const transcriptUrl = tracks[0].baseUrl;
+                            return await fetchTranscriptFromUrl(transcriptUrl);
+                        }
+                    }
+                }
+                
+                // Method 2: Try alternative extraction method
+                const ytInitialDataMatch = html.match(/var ytInitialData = ({.+?});/);
+                if (ytInitialDataMatch) {
+                    const ytData = JSON.parse(ytInitialDataMatch[1]);
+                    const transcriptData = extractTranscriptFromYtData(ytData);
+                    if (transcriptData) {
+                        return transcriptData;
+                    }
+                }
+                
+                throw new Error('No transcript found in video');
+                
+            } catch (error) {
+                console.error('Client-side extraction failed:', error);
+                throw error;
+            }
+        }
+        
+        async function fetchTranscriptFromUrl(url) {
+            const response = await fetch(url);
+            const xml = await response.text();
+            
+            // Parse XML transcript data
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xml, 'text/xml');
+            const textElements = xmlDoc.getElementsByTagName('text');
+            
+            const transcript = [];
+            for (let i = 0; i < textElements.length; i++) {
+                const element = textElements[i];
+                const start = parseFloat(element.getAttribute('start'));
+                const text = element.textContent;
+                
+                const minutes = Math.floor(start / 60);
+                const seconds = Math.floor(start % 60);
+                const timestamp = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                
+                transcript.push({
+                    timestamp: timestamp,
+                    text: text,
+                    start: start
+                });
+            }
+            
+            return transcript;
+        }
+        
+        function extractTranscriptFromYtData(ytData) {
+            // Extract transcript from YouTube's initial data
+            try {
+                const contents = ytData?.contents?.twoColumnWatchNextResults?.results?.results?.contents;
+                if (contents) {
+                    for (const content of contents) {
+                        if (content.videoSecondaryInfoRenderer?.attributedDescription?.content) {
+                            // This is a fallback method
+                            return null;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error extracting from ytData:', error);
+            }
+            return null;
+        }
     </script>
 
     <!-- Footer with Branding -->
