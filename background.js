@@ -29,9 +29,11 @@ async function handleExtract(videoId) {
   await delay(5000);
 
   // Try multiple attempts: click transcript, wait, then extract
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     await chrome.scripting.executeScript({ target: { tabId }, func: tryOpenTranscriptPanel });
-    await delay(2500 + attempt * 1000);
+    await delay(1500);
+    await chrome.scripting.executeScript({ target: { tabId }, func: openTranscriptViaMenu });
+    await delay(3000 + attempt * 1000);
 
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -67,6 +69,32 @@ function tryOpenTranscriptPanel() {
   });
 
   // Sometimes transcript appears in a dialog; nothing else to do here.
+}
+
+function openTranscriptViaMenu() {
+  // Click the top-level kebab (three-dots) menu and choose Transcript if present
+  // Try common containers
+  const containers = [
+    document.querySelector('#top-level-buttons-computed'),
+    document.querySelector('#menu ytd-menu-renderer'),
+    document.querySelector('ytd-video-primary-info-renderer'),
+  ].filter(Boolean);
+
+  containers.forEach(container => {
+    const menuBtn = container.querySelector('button[aria-label*="more" i], button[aria-label*="menu" i], tp-yt-paper-menu-button button');
+    if (menuBtn) {
+      menuBtn.click();
+    }
+  });
+
+  // After menu opens, try to click the Transcript item
+  const items = document.querySelectorAll('tp-yt-paper-item, ytd-menu-service-item-renderer');
+  items.forEach(item => {
+    const txt = (item.innerText || '').toLowerCase();
+    if (txt.includes('transcript')) {
+      item.click();
+    }
+  });
 }
 
 function readTranscriptText() {
