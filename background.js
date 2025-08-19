@@ -28,7 +28,7 @@ async function handleExtract(videoId) {
   // Initial wait for page and player to settle
   await delay(5000);
 
-  // Try multiple attempts: click transcript, wait, then extract
+  // Try multiple attempts: click transcript, wait, then extract (DOM-based)
   for (let attempt = 0; attempt < 5; attempt++) {
     await chrome.scripting.executeScript({ target: { tabId }, func: tryOpenTranscriptPanel });
     await delay(1500);
@@ -45,7 +45,28 @@ async function handleExtract(videoId) {
     }
   }
 
-  throw new Error('Transcript not found (ensure the video has captions, then try again)');
+  // Fallback: extract caption track URL from player response and fetch VTT directly
+  try {
+    const [{ result: trackUrl }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: getCaptionTrackUrl
+    });
+    if (trackUrl && typeof trackUrl === 'string') {
+      const asVttUrl = appendFmtVtt(trackUrl);
+      const resp = await fetch(asVttUrl, { credentials: 'omit' });
+      if (resp.ok) {
+        const vtt = await resp.text();
+        const plain = vttToPlainText(vtt);
+        if (plain.trim().length > 0) {
+          return { transcript: plain };
+        }
+      }
+    }
+  } catch (_) {
+    // ignore and fall through
+  }
+
+  throw new Error('Transcript not found (make sure the video has captions, then try again)');
 }
 
 function delay(ms) {
@@ -95,6 +116,49 @@ function openTranscriptViaMenu() {
       item.click();
     }
   });
+}
+
+function getCaptionTrackUrl() {
+  try {
+    const pr = (window.ytInitialPlayerResponse || window._ytInitialPlayerResponse);
+    const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (Array.isArray(tracks) && tracks.length > 0) {
+      let chosen = tracks.find(t => (t.kind !== 'asr') && (String(t.languageCode || '').toLowerCase().startsWith('en') || String(t.name?.simpleText || '').toLowerCase().includes('english')));
+      if (!chosen) chosen = tracks.find(t => String(t.languageCode || '').toLowerCase().startsWith('en'));
+      if (!chosen) chosen = tracks[0];
+      return chosen?.baseUrl || '';
+    }
+  } catch (e) {
+    // no-op
+  }
+  return '';
+}
+
+function appendFmtVtt(url) {
+  try {
+    const u = new URL(url);
+    if (!u.searchParams.has('fmt')) {
+      u.searchParams.set('fmt', 'vtt');
+    }
+    return u.toString();
+  } catch (_) {
+    // fallback simple concatenation
+    return url + (url.includes('?') ? '&' : '?') + 'fmt=vtt';
+  }
+}
+
+function vttToPlainText(vtt) {
+  const lines = String(vtt || '').replace(/\r/g, '').split('\n');
+  const out = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue; // skip blanks
+    if (trimmed === 'WEBVTT') continue; // header
+    if (/^\d+$/.test(trimmed)) continue; // cue number
+    if (/-->/.test(trimmed)) continue; // timing line
+    out.push(trimmed);
+  }
+  return out.join('\n');
 }
 
 function readTranscriptText() {
