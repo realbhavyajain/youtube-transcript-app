@@ -1036,6 +1036,10 @@
     <div class="glow-effect" style="top: 60%; right: 20%; animation-delay: 2s;"></div>
     <div class="glow-effect" style="bottom: 20%; left: 60%; animation-delay: 4s;"></div>
     
+    <div id="extensionBanner" style="display:none; position: fixed; top: 0; left: 0; right: 0; padding: 12px 16px; background: rgba(239, 68, 68, 0.15); border-bottom: 1px solid rgba(239, 68, 68, 0.35); backdrop-filter: blur(12px); z-index: 2000; text-align: center; color: #fecaca; font-weight: 600;">
+        ⚠️ Please install and enable the Chrome extension to use this tool. Open Chrome → chrome://extensions → Load unpacked → select this project's folder.
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>TranscriptFlow</h1>
@@ -1119,6 +1123,72 @@
             return `https://r.jina.ai/${httpUrl}`;
         };
 
+        // Extension bridge
+        let extensionDetected = false;
+        let extractResolver = null;
+        let extractRejecter = null;
+
+        function showExtensionBanner(show) {
+            const b = document.getElementById('extensionBanner');
+            b.style.display = show ? 'block' : 'none';
+            submitBtn.disabled = show; // require extension
+        }
+
+        function pingExtension() {
+            extensionDetected = false;
+            showExtensionBanner(false);
+            try {
+                window.postMessage({ type: 'YTTE_SITE', action: 'ping' }, '*');
+                setTimeout(() => {
+                    if (!extensionDetected) {
+                        showExtensionBanner(true);
+                    }
+                }, 1200);
+            } catch (_) {
+                showExtensionBanner(true);
+            }
+        }
+
+        window.addEventListener('message', (event) => {
+            const data = event.data;
+            if (!data) return;
+            if (data.type === 'YTTE_EXT' && data.action === 'ping') {
+                extensionDetected = !!data.ok;
+                showExtensionBanner(!extensionDetected);
+            }
+            if (data.type === 'YTTE_EXT' && data.action === 'extract') {
+                if (data.error && extractRejecter) {
+                    extractRejecter(new Error(data.error));
+                } else if (data.transcript && extractResolver) {
+                    extractResolver(data.transcript);
+                }
+                extractResolver = null;
+                extractRejecter = null;
+            }
+        });
+
+        function extractViaExtension(videoId) {
+            return new Promise((resolve, reject) => {
+                extractResolver = resolve;
+                extractRejecter = reject;
+                try {
+                    window.postMessage({ type: 'YTTE_SITE', action: 'extract', videoId }, '*');
+                    setTimeout(() => {
+                        if (extractRejecter) {
+                            extractRejecter(new Error('Extension timed out'));
+                            extractResolver = null;
+                            extractRejecter = null;
+                        }
+                    }, 20000);
+                } catch (e) {
+                    reject(new Error('Extension messaging failed'));
+                }
+            });
+        }
+
+        // Kick off detection shortly after load
+        setTimeout(pingExtension, 300);
+
         submitBtn.addEventListener('click', async () => {
             const url = youtubeUrlInput.value.trim();
             
@@ -1143,53 +1213,19 @@
                     return;
                 }
                 
-                // Try client-side extraction first
-                let transcriptData = null;
-                try {
-                    console.log('Attempting client-side extraction...');
-                    const transcript = await extractTranscriptClientSide(videoId);
-                    transcriptData = {
-                        transcript: transcript,
-                        success: true,
-                        method: 'client-side',
-                        video_info: {
-                            thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-                            title: 'YouTube Video'
-                        }
-                    };
-                } catch (clientError) {
-                    console.log('Client-side extraction failed, trying server-side...');
-                    
-                    // Fallback to server-side extraction
-                    const response = await fetch('/api/transcript', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ 
-                            url,
-                            showTimestamps: showTimestampsCheckbox.checked
-                        })
-                    });
-
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        transcriptData = data;
-                        transcriptData.method = 'server-side';
-                    } else {
-                        showError(data.error || 'Failed to extract transcript');
-                        setLoading(false);
-                        return;
-                    }
+                // Require extension-only path
+                if (!extensionDetected) {
+                    showError('Please install the Chrome extension first (see banner at top).');
+                    setLoading(false);
+                    return;
                 }
-                
-                // Process and display the result
-                if (transcriptData && transcriptData.success) {
-                    displayResult(transcriptData);
-                    console.log(`Extraction successful using: ${transcriptData.method}`);
-                } else {
-                    showError('Failed to extract transcript from both client and server methods');
+
+                try {
+                    const extTranscript = await extractViaExtension(videoId);
+                    displayExtensionResult(extTranscript, videoId);
+                    showSuccess('Transcript extracted via extension');
+                } catch (extErr) {
+                    showError(extErr.message || 'Extension failed to extract transcript');
                 }
                 
             } catch (error) {
@@ -1281,6 +1317,17 @@
 
             resultSection.style.display = 'block';
             showSuccess(`Transcript extracted successfully using ${data.method || 'server-side'} method!`);
+        }
+
+        function displayExtensionResult(transcriptText, videoId) {
+            // transcriptText is a big string (lines)
+            const lines = String(transcriptText || '').split('\n').map(l => l.trim()).filter(Boolean);
+            const data = {
+                video_info: { thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`, title: 'YouTube Video' },
+                method: 'extension',
+                transcript: lines.map(t => ({ timestamp: '', text: t }))
+            };
+            displayResult(data);
         }
 
         function showError(message) {
