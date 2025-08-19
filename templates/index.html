@@ -9,6 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
+            
             margin: 0;
             padding: 0;
             box-sizing: border-box;
@@ -1107,7 +1108,7 @@
 
         // ===== Proxy config (set this to your Cloudflare Worker URL when deployed) =====
         // Example after deploy: https://yt-proxy-yourname.workers.dev
-        const PROXY_BASE = window.CLOUDFLARE_PROXY_BASE || '';
+        const PROXY_BASE = window.CLOUDFLARE_PROXY_BASE || 'https://youtubetranscripter.successfulbhavya.workers.dev';
         const proxify = (targetUrl) => {
             if (PROXY_BASE) {
                 // Encode full target URL for the worker
