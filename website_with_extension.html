@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Transcript Extractor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            min-height: 100vh;
+            color: white;
+            padding: 20px;
+        }
+        
+        .container { max-width: 800px; margin: 0 auto; text-align: center; }
+        
+        h1 { font-size: 3rem; margin-bottom: 20px; color: #7c3aed; }
+        
+        .extension-section {
+            background: rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .install-btn {
+            background: #7c3aed;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            margin: 10px;
+        }
+        
+        .main-card {
+            background: rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 30px;
+            border: 1px solid rgba(255,255,255,0.2);
+            display: none;
+        }
+        
+        .main-card.show { display: block; }
+        
+        .url-input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 10px;
+            background: rgba(255,255,255,0.1);
+            color: white;
+            font-size: 1rem;
+            margin-bottom: 20px;
+        }
+        
+        .submit-btn {
+            background: #7c3aed;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        
+        .transcript-container {
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            max-height: 400px;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        .export-btn {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 10px;
+            display: none;
+        }
+        
+        .status { margin: 15px 0; padding: 10px; border-radius: 8px; }
+        .success { background: rgba(16,185,129,0.2); color: #10b981; }
+        .error { background: rgba(239,68,68,0.2); color: #ef4444; }
+        
+        footer { margin-top: 40px; color: #9ca3af; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 YouTube Transcript Extractor</h1>
+        
+        <!-- Extension Installation Section -->
+        <div class="extension-section" id="extensionSection">
+            <h2>🚀 Install Extension First</h2>
+            <p>To use this tool, you need to install our Chrome extension for reliable transcript extraction.</p>
+            <button class="install-btn" id="installBtn">📥 Download Extension</button>
+            <div class="status" id="extensionStatus">Extension not detected</div>
+        </div>
+        
+        <!-- Main Transcript Tool -->
+        <div class="main-card" id="mainCard">
+            <h2>🎯 Extract Transcript</h2>
+            <input type="url" class="url-input" id="urlInput" placeholder="Paste YouTube video URL here..." />
+            <button class="submit-btn" id="submitBtn">🔍 Extract Transcript</button>
+            
+            <div class="status" id="status"></div>
+            <div class="transcript-container" id="transcriptContainer">
+                <div id="transcriptContent"></div>
+            </div>
+            
+            <button class="export-btn" id="exportTxtBtn">📄 Download as TXT</button>
+        </div>
+    </div>
+    
+    <footer>
+        Built by Bhavya 🚀<br>
+        successfulbhavya@gmail.com
+    </footer>
+
+    <script>
+        // Extension Detection
+        const extensionId = 'your-extension-id-here';
+        
+        function checkExtensionInstalled() {
+            if (typeof chrome !== 'undefined' && chrome.runtime) {
+                chrome.runtime.sendMessage(extensionId, { action: 'ping' }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        showExtensionNotInstalled();
+                    } else {
+                        showExtensionInstalled();
+                    }
+                });
+            } else {
+                showExtensionNotInstalled();
+            }
+        }
+        
+        function showExtensionInstalled() {
+            document.getElementById('extensionStatus').textContent = '✅ Extension detected!';
+            document.getElementById('extensionStatus').className = 'status success';
+            document.getElementById('mainCard').classList.add('show');
+            document.getElementById('extensionSection').style.display = 'none';
+        }
+        
+        function showExtensionNotInstalled() {
+            document.getElementById('extensionStatus').textContent = '❌ Extension not detected';
+            document.getElementById('extensionStatus').className = 'status error';
+            document.getElementById('mainCard').classList.remove('show');
+            document.getElementById('extensionSection').style.display = 'block';
+        }
+        
+        // Extension Download
+        document.getElementById('installBtn').addEventListener('click', function() {
+            alert('Extension installation:\n\n1. Download the extension files\n2. Go to chrome://extensions/\n3. Enable Developer mode\n4. Click "Load unpacked"\n5. Select the extension folder\n\nAfter installation, refresh this page!');
+        });
+        
+        // Main functionality
+        document.getElementById('submitBtn').addEventListener('click', async function() {
+            const url = document.getElementById('urlInput').value.trim();
+            if (!url) {
+                showStatus('Please enter a YouTube URL', 'error');
+                return;
+            }
+            
+            const videoId = extractVideoId(url);
+            if (!videoId) {
+                showStatus('Invalid YouTube URL', 'error');
+                return;
+            }
+            
+            showStatus('Extracting transcript via extension...', 'success');
+            
+            try {
+                const transcript = await extractTranscriptViaExtension(videoId);
+                if (transcript) {
+                    displayTranscript(transcript);
+                    showStatus('Transcript extracted successfully!', 'success');
+                } else {
+                    throw new Error('No transcript found');
+                }
+            } catch (error) {
+                showStatus(`Error: ${error.message}`, 'error');
+            }
+        });
+        
+        async function extractTranscriptViaExtension(videoId) {
+            return new Promise((resolve, reject) => {
+                if (typeof chrome !== 'undefined' && chrome.runtime) {
+                    chrome.runtime.sendMessage(extensionId, { 
+                        action: 'extractTranscript',
+                        videoId: videoId
+                    }, (response) => {
+                        if (chrome.runtime.lastError) {
+                            reject(new Error('Extension communication failed'));
+                        } else if (response && response.transcript) {
+                            resolve(response.transcript);
+                        } else {
+                            reject(new Error('No transcript data received'));
+                        }
+                    });
+                } else {
+                    reject(new Error('Extension not available'));
+                }
+            });
+        }
+        
+        function extractVideoId(url) {
+            const regex = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/;
+            const match = url.match(regex);
+            return match ? match[1] : null;
+        }
+        
+        function displayTranscript(transcript) {
+            document.getElementById('transcriptContent').textContent = transcript;
+            document.getElementById('transcriptContainer').style.display = 'block';
+            document.getElementById('exportTxtBtn').style.display = 'inline-block';
+        }
+        
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+        
+        // Export functionality
+        document.getElementById('exportTxtBtn').addEventListener('click', function() {
+            const transcript = document.getElementById('transcriptContent').textContent;
+            downloadAsTxt(transcript, 'youtube-transcript.txt');
+        });
+        
+        function downloadAsTxt(content, filename) {
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+        
+        // Check extension on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            checkExtensionInstalled();
+            setTimeout(checkExtensionInstalled, 2000);
+        });
+    </script>
+</body>
+</html>

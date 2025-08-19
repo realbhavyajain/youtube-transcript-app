@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 350px; padding: 20px; font-family: Arial; background: #1a1a2e; color: white; }
+    .extract-btn { width: 100%; padding: 12px; background: #7c3aed; border: none; border-radius: 8px; color: white; cursor: pointer; }
+    .status { text-align: center; margin: 15px 0; }
+    .transcript-container { max-height: 200px; overflow-y: auto; background: rgba(255,255,255,0.1); padding: 15px; display: none; }
+    .export-btn { width: 100%; padding: 10px; background: #10b981; border: none; border-radius: 6px; color: white; cursor: pointer; display: none; }
+  </style>
+</head>
+<body>
+  <h1 style="text-align:center">🎬 Transcript Extractor</h1>
+  <button id="extractBtn" class="extract-btn">Extract Transcript</button>
+  <div id="status" class="status"></div>
+  <div id="transcriptContainer" class="transcript-container">
+    <div id="transcriptText"></div>
+  </div>
+  <button id="exportBtn" class="export-btn">Download as TXT</button>
+  <div style="text-align:center; margin-top:15px; font-size:11px; color:#9ca3af">
+    Built by Bhavya 🚀<br>successfulbhavya@gmail.com
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
