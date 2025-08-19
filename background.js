@@ -66,6 +66,16 @@ async function handleExtract(videoId) {
     // ignore and fall through
   }
 
+  // Fallback 2: hit YouTube timedtext endpoint directly
+  try {
+    const timedText = await fetchTimedTextCaptions(videoId);
+    if (timedText && timedText.trim().length > 0) {
+      return { transcript: timedText };
+    }
+  } catch (_) {
+    // ignore and fall through
+  }
+
   throw new Error('Transcript not found (make sure the video has captions, then try again)');
 }
 
@@ -159,6 +169,60 @@ function vttToPlainText(vtt) {
     out.push(trimmed);
   }
   return out.join('\n');
+}
+
+async function fetchTimedTextCaptions(videoId) {
+  const base = 'https://www.youtube.com/api/timedtext';
+  const languages = ['en', 'en-US', 'en-GB', 'hi'];
+  const attempts = [];
+  for (const lang of languages) {
+    attempts.push(`${base}?v=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}&fmt=vtt`);
+    attempts.push(`${base}?v=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}&fmt=vtt&kind=asr`);
+  }
+  // A generic auto-caption attempt
+  attempts.push(`${base}?v=${encodeURIComponent(videoId)}&lang=en&fmt=vtt&kind=asr`);
+
+  for (const url of attempts) {
+    try {
+      const resp = await fetch(url, { credentials: 'omit' });
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      if (!text) continue;
+      if (text.startsWith('WEBVTT')) {
+        const plain = vttToPlainText(text);
+        if (plain.trim()) return plain;
+      } else if (text.trim().startsWith('<')) {
+        const plain = xmlTimedTextToPlain(text);
+        if (plain.trim()) return plain;
+      }
+    } catch (_) {
+      // continue
+    }
+  }
+  return '';
+}
+
+function xmlTimedTextToPlain(xml) {
+  // Very small XML parser using regex; good enough for YouTube timedtext
+  const out = [];
+  const textTagRegex = /<text[^>]*>([\s\S]*?)<\/text>/gi;
+  let m;
+  while ((m = textTagRegex.exec(xml)) !== null) {
+    const raw = m[1] || '';
+    const unescaped = decodeHtmlEntities(raw.replace(/\n+/g, ' ').replace(/<[^>]+>/g, ''));
+    const cleaned = unescaped.trim();
+    if (cleaned) out.push(cleaned);
+  }
+  return out.join('\n');
+}
+
+function decodeHtmlEntities(s) {
+  return String(s)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
 }
 
 function readTranscriptText() {
