@@ -16,68 +16,72 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 async function handleExtract(videoId) {
-  // Find an existing YouTube tab or open one in foreground for reliable loading
-  const tabs = await chrome.tabs.query({ url: '*://*.youtube.com/*' });
-  let tabId;
-  if (tabs && tabs.length > 0) {
-    tabId = tabs[0].id;
-    await chrome.tabs.update(tabId, { url: `https://www.youtube.com/watch?v=${videoId}`, active: true });
-  } else {
-    const newTab = await chrome.tabs.create({ url: `https://www.youtube.com/watch?v=${videoId}`, active: true });
-    tabId = newTab.id;
-  }
-
-  // Initial wait for page and player to settle
-  await waitForPlayerReady(tabId, 12000);
-
-  // Try multiple attempts: click transcript, wait, then extract (DOM-based)
-  for (let attempt = 0; attempt < 6; attempt++) {
-    await chrome.scripting.executeScript({ target: { tabId }, func: tryOpenTranscriptPanel });
-    await delay(1800);
-    await chrome.scripting.executeScript({ target: { tabId }, func: openTranscriptViaMenu });
-    await delay(3500 + attempt * 1000);
-
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: readTranscriptText
-    });
-
-    if (typeof result === 'string' && result.trim().length > 0) {
-      return { transcript: result };
-    }
-  }
-
-  // Fallback: extract caption track URL from player response and fetch VTT directly
-  try {
-    const [{ result: trackUrl }] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: getCaptionTrackUrlMainWorld,
-      world: 'MAIN'
-    });
-    if (trackUrl && typeof trackUrl === 'string') {
-      const asVttUrl = appendFmtVtt(trackUrl);
-      const resp = await fetch(asVttUrl, { credentials: 'omit' });
-      if (resp.ok) {
-        const vtt = await resp.text();
-        const plain = vttToPlainText(vtt);
-        if (plain.trim().length > 0) {
-          return { transcript: plain };
-        }
-      }
-    }
-  } catch (_) {
-    // ignore and fall through
-  }
-
-  // Fallback 2: hit YouTube timedtext endpoint directly
+  // First, try direct timedtext API without touching the user's tab
   try {
     const timedText = await fetchTimedTextCaptions(videoId);
     if (timedText && timedText.trim().length > 0) {
       return { transcript: timedText };
     }
-  } catch (_) {
-    // ignore and fall through
+  } catch (_) {}
+
+  // If that fails, open a temporary background tab (inactive) to extract
+  let tempTabId = null;
+  try {
+    const newTab = await chrome.tabs.create({ url: `https://www.youtube.com/watch?v=${videoId}`, active: false });
+    tempTabId = newTab.id;
+
+    // Wait for page and player to settle
+    await waitForPlayerReady(tempTabId, 12000);
+
+    // Try multiple attempts: click transcript, wait, then extract (DOM-based)
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await chrome.scripting.executeScript({ target: { tabId: tempTabId }, func: tryOpenTranscriptPanel });
+      await delay(1800);
+      await chrome.scripting.executeScript({ target: { tabId: tempTabId }, func: openTranscriptViaMenu });
+      await delay(3500 + attempt * 1000);
+
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tempTabId },
+        func: readTranscriptText
+      });
+
+      if (typeof result === 'string' && result.trim().length > 0) {
+        return { transcript: result };
+      }
+    }
+
+    // Fallback: extract caption track URL from player response and fetch VTT directly
+    try {
+      const [{ result: trackUrl }] = await chrome.scripting.executeScript({
+        target: { tabId: tempTabId },
+        func: getCaptionTrackUrlMainWorld,
+        world: 'MAIN'
+      });
+      if (trackUrl && typeof trackUrl === 'string') {
+        const asVttUrl = appendFmtVtt(trackUrl);
+        const resp = await fetch(asVttUrl, { credentials: 'omit' });
+        if (resp.ok) {
+          const vtt = await resp.text();
+          const plain = vttToPlainText(vtt);
+          if (plain.trim().length > 0) {
+            return { transcript: plain };
+          }
+        }
+      }
+    } catch (_) {}
+  } finally {
+    if (tempTabId !== null) {
+      try { await chrome.tabs.remove(tempTabId); } catch (_) {}
+    }
   }
+
+  // Final fallback: timedtext again (ASR/etc), in case the first attempt raced too early
+  try {
+    const timedTextRetry = await fetchTimedTextCaptions(videoId);
+    if (timedTextRetry && timedTextRetry.trim().length > 0) {
+      return { transcript: timedTextRetry };
+    }
+  } catch (_) {}
 
   throw new Error('Transcript not found (make sure the video has captions, then try again)');
 }
