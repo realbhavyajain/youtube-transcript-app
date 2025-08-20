@@ -7,7 +7,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request && request.source === 'site' && request.action === 'extractTranscript') {
-    const { videoId } = request;
+    const input = request.videoId || request.url || '';
+    const videoId = parseVideoId(input);
     handleExtract(videoId)
       .then(result => sendResponse(result))
       .catch(err => sendResponse({ error: err?.message || 'Unknown error' }));
@@ -24,56 +25,13 @@ async function handleExtract(videoId) {
     }
   } catch (_) {}
 
-  // If that fails, open a temporary background tab (inactive) to extract
-  let tempTabId = null;
+  // Next, try parsing the watch page HTML for caption tracks (no tabs are opened)
   try {
-    const newTab = await chrome.tabs.create({ url: `https://www.youtube.com/watch?v=${videoId}`, active: false });
-    tempTabId = newTab.id;
-
-    // Wait for page and player to settle
-    await waitForPlayerReady(tempTabId, 12000);
-
-    // Try multiple attempts: click transcript, wait, then extract (DOM-based)
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await chrome.scripting.executeScript({ target: { tabId: tempTabId }, func: tryOpenTranscriptPanel });
-      await delay(1800);
-      await chrome.scripting.executeScript({ target: { tabId: tempTabId }, func: openTranscriptViaMenu });
-      await delay(3500 + attempt * 1000);
-
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tempTabId },
-        func: readTranscriptText
-      });
-
-      if (typeof result === 'string' && result.trim().length > 0) {
-        return { transcript: result };
-      }
+    const plain = await fetchTranscriptFromWatchHtml(videoId);
+    if (plain && plain.trim().length > 0) {
+      return { transcript: plain };
     }
-
-    // Fallback: extract caption track URL from player response and fetch VTT directly
-    try {
-      const [{ result: trackUrl }] = await chrome.scripting.executeScript({
-        target: { tabId: tempTabId },
-        func: getCaptionTrackUrlMainWorld,
-        world: 'MAIN'
-      });
-      if (trackUrl && typeof trackUrl === 'string') {
-        const asVttUrl = appendFmtVtt(trackUrl);
-        const resp = await fetch(asVttUrl, { credentials: 'omit' });
-        if (resp.ok) {
-          const vtt = await resp.text();
-          const plain = vttToPlainText(vtt);
-          if (plain.trim().length > 0) {
-            return { transcript: plain };
-          }
-        }
-      }
-    } catch (_) {}
-  } finally {
-    if (tempTabId !== null) {
-      try { await chrome.tabs.remove(tempTabId); } catch (_) {}
-    }
-  }
+  } catch (_) {}
 
   // Final fallback: timedtext again (ASR/etc), in case the first attempt raced too early
   try {
@@ -261,5 +219,67 @@ function readTranscriptText() {
     return Array.from(altSegs).map(s => (s.innerText || '').trim()).filter(Boolean).join('\n').trim();
   }
   return '';
+}
+
+function parseVideoId(input) {
+  const val = String(input || '').trim();
+  if (!val) return '';
+  if (/^[a-zA-Z0-9_-]{6,}$/.test(val) && !/\s/.test(val) && val.length <= 64) return val;
+  try {
+    const u = new URL(val);
+    if (u.hostname.includes('youtu.be')) {
+      const p = u.pathname.split('/').filter(Boolean)[0] || '';
+      if (p) return p;
+    }
+    if (u.searchParams.get('v')) return u.searchParams.get('v');
+    const mShorts = /\/shorts\/([\w-]{6,})/.exec(u.pathname);
+    if (mShorts && mShorts[1]) return mShorts[1];
+  } catch (_) {}
+  return '';
+}
+
+async function fetchTranscriptFromWatchHtml(videoId) {
+  const url = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+  const resp = await fetch(url, {
+    credentials: 'omit',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9'
+    }
+  });
+  if (!resp.ok) return '';
+  const html = await resp.text();
+  const pr = extractPlayerResponseFromHtml(html);
+  const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!Array.isArray(tracks) || tracks.length === 0) return '';
+  let chosen = tracks.find(t => (t.kind !== 'asr') && (String(t.languageCode || '').toLowerCase().startsWith('en') || String(t.name?.simpleText || '').toLowerCase().includes('english')));
+  if (!chosen) chosen = tracks.find(t => String(t.languageCode || '').toLowerCase().startsWith('en'));
+  if (!chosen) chosen = tracks[0];
+  const baseUrl = chosen?.baseUrl;
+  if (!baseUrl) return '';
+  const vttUrl = appendFmtVtt(baseUrl);
+  const vttResp = await fetch(vttUrl, { credentials: 'omit' });
+  if (!vttResp.ok) return '';
+  const vtt = await vttResp.text();
+  return vttToPlainText(vtt);
+}
+
+function extractPlayerResponseFromHtml(html) {
+  try {
+    // Try several patterns that appear on watch pages
+    const patterns = [
+      /ytInitialPlayerResponse\s*=\s*(\{[\s\S]*?\});/,
+      /var\s+ytInitialPlayerResponse\s*=\s*(\{[\s\S]*?\});/,
+      /\"ytInitialPlayerResponse\"\s*:\s*(\{[\s\S]*?\})\s*,\s*\"responseContext\"/,
+    ];
+    for (const re of patterns) {
+      const m = re.exec(html);
+      if (m && m[1]) {
+        const jsonText = m[1];
+        try { return JSON.parse(jsonText); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 
