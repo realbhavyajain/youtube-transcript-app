@@ -8,7 +8,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request && request.source === 'site' && request.action === 'extractTranscript') {
     const { videoId } = request;
-    handleExtract(videoId).then(result => sendResponse(result)).catch(err => sendResponse({ error: err?.message || 'Unknown error' }));
+    handleExtract(videoId)
+      .then(result => sendResponse(result))
+      .catch(err => sendResponse({ error: err?.message || 'Unknown error' }));
     return true; // async
   }
 });
@@ -26,14 +28,14 @@ async function handleExtract(videoId) {
   }
 
   // Initial wait for page and player to settle
-  await delay(5000);
+  await waitForPlayerReady(tabId, 12000);
 
   // Try multiple attempts: click transcript, wait, then extract (DOM-based)
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     await chrome.scripting.executeScript({ target: { tabId }, func: tryOpenTranscriptPanel });
-    await delay(1500);
+    await delay(1800);
     await chrome.scripting.executeScript({ target: { tabId }, func: openTranscriptViaMenu });
-    await delay(3000 + attempt * 1000);
+    await delay(3500 + attempt * 1000);
 
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -49,7 +51,8 @@ async function handleExtract(videoId) {
   try {
     const [{ result: trackUrl }] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: getCaptionTrackUrl
+      func: getCaptionTrackUrlMainWorld,
+      world: 'MAIN'
     });
     if (trackUrl && typeof trackUrl === 'string') {
       const asVttUrl = appendFmtVtt(trackUrl);
@@ -78,6 +81,21 @@ async function handleExtract(videoId) {
 
   throw new Error('Transcript not found (make sure the video has captions, then try again)');
 }
+async function waitForPlayerReady(tabId, timeoutMs = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => !!(window.ytInitialPlayerResponse || window._ytInitialPlayerResponse || document.querySelector('video'))
+      });
+      if (result) return true;
+    } catch (_) {}
+    await delay(500);
+  }
+  return false;
+}
+
 
 function delay(ms) {
   return new Promise(res => setTimeout(res, ms));
@@ -128,7 +146,7 @@ function openTranscriptViaMenu() {
   });
 }
 
-function getCaptionTrackUrl() {
+function getCaptionTrackUrlMainWorld() {
   try {
     const pr = (window.ytInitialPlayerResponse || window._ytInitialPlayerResponse);
     const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;

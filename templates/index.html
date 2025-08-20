@@ -1131,7 +1131,8 @@
         function showExtensionBanner(show) {
             const b = document.getElementById('extensionBanner');
             b.style.display = show ? 'block' : 'none';
-            submitBtn.disabled = show; // require extension
+            // Do not disable submit; we now support fallbacks without the extension
+            submitBtn.disabled = false;
         }
 
         function pingExtension() {
@@ -1205,32 +1206,61 @@
             setLoading(true);
             
             try {
-                // Extract video ID
                 const videoId = extractVideoId(url);
                 if (!videoId) {
                     showError('Invalid YouTube URL');
-                    setLoading(false);
-                    return;
-                }
-                
-                // Require extension-only path
-                if (!extensionDetected) {
-                    showError('Please install the Chrome extension first (see banner at top).');
-                    setLoading(false);
                     return;
                 }
 
-                try {
-                    const extTranscript = await extractViaExtension(videoId);
-                    displayExtensionResult(extTranscript, videoId);
-                    showSuccess('Transcript extracted via extension');
-                } catch (extErr) {
-                    showError(extErr.message || 'Extension failed to extract transcript');
+                // 1) Try extension (if detected)
+                if (extensionDetected) {
+                    try {
+                        const extTranscript = await extractViaExtension(videoId);
+                        displayExtensionResult(extTranscript, videoId);
+                        showSuccess('Transcript extracted via extension');
+                        return;
+                    } catch (extErr) {
+                        console.warn('Extension extraction failed, falling back...', extErr);
+                    }
                 }
-                
+
+                // 2) Client-side fallback via Piped → Cloudflare Worker proxy
+                try {
+                    const transcript = await extractTranscriptClientSide(videoId);
+                    const data = {
+                        video_info: { thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`, title: 'YouTube Video' },
+                        method: 'client-fallback',
+                        transcript
+                    };
+                    displayResult(data);
+                    showSuccess('Transcript extracted via fallback');
+                    return;
+                } catch (clientErr) {
+                    console.warn('Client-side fallback failed, trying server...', clientErr);
+                }
+
+                // 3) Server fallback
+                try {
+                    const resp = await fetch('/api/transcript', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url, showTimestamps: showTimestampsCheckbox.checked })
+                    });
+                    const json = await resp.json();
+                    if (!resp.ok || json.error) {
+                        throw new Error(json.error || `Server error (${resp.status})`);
+                    }
+                    json.method = 'server';
+                    displayResult(json);
+                    showSuccess('Transcript extracted via server');
+                    return;
+                } catch (serverErr) {
+                    throw serverErr;
+                }
             } catch (error) {
                 console.error('Extraction error:', error);
-                showError('Network error. Please try again.');
+                const msg = (error && error.message) ? error.message : 'Transcript not found. Ensure the video has captions and try again.';
+                showError(msg);
             } finally {
                 setLoading(false);
             }
@@ -1589,28 +1619,34 @@
             }
         }, 2000);
 
-        // Client-side YouTube transcript extraction (via Piped captions API)
+        // Client-side YouTube transcript extraction with multiple fallbacks
         async function extractTranscriptClientSide(videoId) {
-            // 1) Get list of available captions from Piped
-            const listUrl = proxify(`https://piped.video/api/v1/captions/${videoId}`);
-            const listResp = await fetch(listUrl);
-            if (!listResp.ok) throw new Error(`Captions list error: ${listResp.status}`);
-            const tracks = await listResp.json();
-            if (!Array.isArray(tracks) || tracks.length === 0) throw new Error('No captions available');
+            // Try Piped first
+            try {
+                const listUrl = proxify(`https://piped.video/api/v1/captions/${videoId}`);
+                const listResp = await fetch(listUrl);
+                if (!listResp.ok) throw new Error(`Captions list error: ${listResp.status}`);
+                const tracks = await listResp.json();
+                if (!Array.isArray(tracks) || tracks.length === 0) throw new Error('No captions available');
 
-            // 2) Choose the best track: prefer non-auto English, then any English, then first
-            let chosen = tracks.find(t => (t.autoGenerated === false) && ((t.language || '').toLowerCase().includes('english') || (t.code || '').startsWith('en')));
-            if (!chosen) chosen = tracks.find(t => (t.language || '').toLowerCase().includes('english') || (t.code || '').startsWith('en'));
-            if (!chosen) chosen = tracks[0];
+                // Choose best track: prefer non-auto English, then any English, then first
+                let chosen = tracks.find(t => (t.autoGenerated === false) && ((t.language || '').toLowerCase().includes('english') || (t.code || '').startsWith('en')));
+                if (!chosen) chosen = tracks.find(t => (t.language || '').toLowerCase().includes('english') || (t.code || '').startsWith('en'));
+                if (!chosen) chosen = tracks[0];
 
-            // 3) Fetch the caption file (usually VTT)
-            const trackUrl = chosen.url; // absolute
-            const vttText = await (await fetch(proxify(trackUrl))).text();
-
-            // 4) Parse VTT into [{timestamp, text, start}]
-            const transcript = parseVttToTranscript(vttText);
-            if (!transcript || transcript.length === 0) throw new Error('Failed to parse captions');
-            return transcript;
+                const trackUrl = chosen.url; // absolute
+                const vttResp = await fetch(proxify(trackUrl));
+                if (!vttResp.ok) throw new Error(`Track fetch error: ${vttResp.status}`);
+                const vttText = await vttResp.text();
+                const transcript = parseVttToTranscript(vttText);
+                if (Array.isArray(transcript) && transcript.length > 0) return transcript;
+                throw new Error('Failed to parse captions');
+            } catch (e) {
+                // Fall back to YouTube timedtext via proxy
+                const tt = await fetchTimedTextTranscript(videoId);
+                if (Array.isArray(tt) && tt.length > 0) return tt;
+                throw e;
+            }
         }
 
         function parseVttToTranscript(vtt) {
@@ -1658,6 +1694,60 @@
                 s = parseFloat(parts[1]);
             }
             return h * 3600 + m * 60 + s;
+        }
+
+        // Timedtext (YouTube) fallback via proxy; returns [{timestamp, text, start}]
+        async function fetchTimedTextTranscript(videoId) {
+            const base = 'https://www.youtube.com/api/timedtext';
+            const languages = ['en', 'en-US', 'en-GB', 'hi'];
+            const attempts = [];
+            for (const lang of languages) {
+                attempts.push(`${base}?v=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}&fmt=vtt`);
+                attempts.push(`${base}?v=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}&fmt=vtt&kind=asr`);
+            }
+            for (const url of attempts) {
+                try {
+                    const resp = await fetch(proxify(url));
+                    if (!resp.ok) continue;
+                    const text = await resp.text();
+                    if (!text) continue;
+                    if (text.startsWith('WEBVTT')) {
+                        const segs = parseVttToTranscript(text);
+                        if (segs && segs.length) return segs;
+                    } else if (text.trim().startsWith('<')) {
+                        const segs = parseTimedTextXmlToTranscript(text);
+                        if (segs && segs.length) return segs;
+                    }
+                } catch (_) {
+                    // try next
+                }
+            }
+            return [];
+        }
+
+        function parseTimedTextXmlToTranscript(xml) {
+            const segments = [];
+            const textTagRegex = /<text[^>]*start="([\d\.]+)"[^>]*>([\s\S]*?)<\/text>/gi;
+            let m;
+            while ((m = textTagRegex.exec(xml)) !== null) {
+                const startSec = parseFloat(m[1]);
+                const raw = m[2] || '';
+                const unescaped = raw
+                    .replace(/\n+/g, ' ')
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#39;/g, "'")
+                    .trim();
+                if (!unescaped) continue;
+                const minutes = Math.floor(startSec / 60);
+                const seconds = Math.floor(startSec % 60);
+                const timestamp = `${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+                segments.push({ timestamp, text: unescaped, start: Math.floor(startSec) });
+            }
+            return segments;
         }
     </script>
 
